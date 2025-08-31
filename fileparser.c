@@ -7,18 +7,20 @@
 #include "fileparser.h"
 
 /* =============== MACROS ================ */
-#define PARSER_COLUMN_CUSTOM_NAME "__parser_column_%zu__"
+#define INCREASE_CAP(cap) do {*cap <<= 1;} while (0)
+#define PARSER_COLUMN_CUSTOM_NAME "__column_%zu__"
 #define PRINTING_BOND 65535
 #define BUFFER_CAPACITY 128
 #define HEADER_MAX_WIDTH 32
-#define INITIAL_TOKENS_CAPACITY 10
+#define MIN_CAPACITY 16
+#define INITIAL_TOKENS_CAPACITY MIN_CAPACITY
 
 /* =============== TYPES ================ */
 typedef FILE* P_PFILE;
 typedef int (*QuickSortComp)(size_t, size_t, size_t, PARSER*);
 
-typedef void (*PrintHandler)(CONTAINER_DATA);
-typedef void (*SaveHandler)(CONTAINER_DATA, FILE*, char);
+typedef void (*PrintHandler)(CONTAINER_DATA*);
+typedef void (*SaveHandler)(CONTAINER_DATA*, FILE*, char);
 
 typedef struct __parser_type_handelrs
 {
@@ -27,61 +29,66 @@ typedef struct __parser_type_handelrs
 } TYPE_HANDLERS;
 
 /* =============== PRIVATE FUNCTIONS ================ */
-void _init_parser();
-PARSER_SETTINGS _create_default_parser_settings();
-PARSER_SORT_SETTINGS _create_default_parser_sort_settings();
+static void _init_parser();
+static PARSER_SETTINGS _create_default_parser_settings();
+static PARSER_SORT_SETTINGS _create_default_parser_sort_settings();
 
-void _parse_file(PARSER* parser, P_PFILE file_to_parse);
-CONTAINER_DATA* _parse_line(const char* line, char splitter, size_t* token_count);
-CONTAINER_DATA _parse_token(char* token);
+static int _parse_file(PARSER* parser, P_PFILE file_to_parse);
+static CONTAINER_DATA* _parse_line(const char* line, char splitter, size_t* token_count);
+static CONTAINER_DATA _parse_token(char* token);
 
-int _check_for_quotes(char* str, size_t len);
-char* _trim_whitespace(char* str);
-char* _trim_newlines(char* str);
-char* _remove_quotes(char* str);
-void* _fix_headers(CONTAINER_DATA** lines, size_t token_count);
+static int _check_for_quotes(char* str, size_t len);
+static char* _trim_whitespace(char* str);
+static char* _trim_newlines(char* str);
+static char* _remove_quotes(char* str);
+static char* _create_new_header(size_t i);
+static void _check_and_fix_header(P_PARSER parser);
+static void _check_and_fix_parsed_data(P_PARSER parser);
 
-char* _container_value_to_str(CONTAINER_DATA data);
-int _compare_cells(
+static int _compare_cells(
     const size_t a_idx,
     const size_t b_idx,
     const size_t sort_column,
     PARSER* parser);
-void _quick_sort(PARSER* parser, size_t sort_column, QuickSortComp comp_func, size_t left, size_t right, size_t* indices);
-size_t _partition(PARSER* parser, size_t sort_column, QuickSortComp comp_func, size_t left, size_t right, size_t* indices);
-void _swap(size_t* a, size_t* b);
+static void _quick_sort(PARSER* parser, size_t sort_column, QuickSortComp comp_func, size_t left, size_t right, size_t* indices);
+static size_t _partition(PARSER* parser, size_t sort_column, QuickSortComp comp_func, size_t left, size_t right, size_t* indices);
+static inline void _swap(size_t* a, size_t* b);
+
+static char* _container_value_to_str(CONTAINER_DATA data);
+static inline void _set_string(CONTAINER_DATA* data, char* str);
+static inline void _set_null(CONTAINER_DATA* data);
 
 /* =============== HANDLER FUNCTIONS ================ */
-void _print_string(CONTAINER_DATA data)
+static inline void _print_string(CONTAINER_DATA* data)
 {
-    printf("\"%s\" ", data.value.string);
+    printf("\"%s\" ", data->value.string);
 }
-void _print_integer(CONTAINER_DATA data)
+static inline void _print_integer(CONTAINER_DATA* data)
 {
-    printf("%llu ", data.value.integer);
+    printf("%llu ", data->value.integer);
 }
-void _print_float(CONTAINER_DATA data)
+static inline void _print_float(CONTAINER_DATA* data)
 {
-    printf("%Lf ", data.value.floating);
+    printf("%Lf ", data->value.floating);
 }
-void _print_null(CONTAINER_DATA data)
+static inline void _print_null(CONTAINER_DATA* data)
 {
     printf("NULL ");
 }
 
-void _save_string(CONTAINER_DATA data, FILE* file, char splitter)
+static inline void _save_string(CONTAINER_DATA* data, FILE* file, char splitter)
 {
-    fprintf(file, "%s%c", data.value.string, splitter);
+    fprintf(file, "%s%c", data->value.string, splitter);
 }
-void _save_integer(CONTAINER_DATA data, FILE* file, char splitter)
+static inline void _save_integer(CONTAINER_DATA* data, FILE* file, char splitter)
 {
-    fprintf(file, "%llu%c", data.value.integer, splitter);
+    fprintf(file, "%llu%c", data->value.integer, splitter);
 }
-void _save_float(CONTAINER_DATA data, FILE* file, char splitter)
+static inline void _save_float(CONTAINER_DATA* data, FILE* file, char splitter)
 {
-    fprintf(file, "%Lf%c", data.value.floating, splitter);
+    fprintf(file, "%Lf%c", data->value.floating, splitter);
 }
-void _save_null(CONTAINER_DATA data, FILE* file, char splitter)
+static inline void _save_null(CONTAINER_DATA* data, FILE* file, char splitter)
 {
     fprintf(file, "NULL%c", splitter);
 }
@@ -95,21 +102,31 @@ static TYPE_HANDLERS handlers[] =
 };
 
 /* =============== STATIC VARS ================ */
-PARSER_SETTINGS DEFAULT_PARSER_SETTINGS;
-PARSER_SORT_SETTINGS DEFAULT_PARSER_SORT_SETTINGS;
+static PARSER_SETTINGS DEFAULT_PARSER_SETTINGS;
+static PARSER_SORT_SETTINGS DEFAULT_PARSER_SORT_SETTINGS;
 
 static int system_initialized = 0;
 static int parser_settings_initialized = 0;
 static int parser_sort_settings_initialized = 0;
 
 /* =============== PUBLIC ================ */
-PARSER create_parser()
+P_PARSER create_parser()
 {
     if (system_initialized ^ 1) _init_parser();
 
-    PARSER parser;
-    parser.container = NULL;
-    parser.settings = DEFAULT_PARSER_SETTINGS;
+    P_PARSER parser = malloc(sizeof(PARSER));
+    if (parser == NULL)
+        {
+            PARSER_LOG_CRITICAL("FAILED TO ALLOCATE PARSER");
+            return NULL;
+        }
+
+    parser->container.lines = NULL;
+    parser->container.info = NULL;
+    parser->container.line_count = 0;
+    parser->container.column_count = 0;
+    parser->container.header_included = 0;
+    parser->settings = DEFAULT_PARSER_SETTINGS;
     return parser;
 }
 
@@ -124,7 +141,9 @@ int parse_file(PARSER* parser, const char* filename)
             return 1;
         }
 
-    _parse_file(parser, target_file);
+    if(_parse_file(parser, target_file))
+        return 1;
+
     fclose(target_file);
 
     return 0;
@@ -132,13 +151,13 @@ int parse_file(PARSER* parser, const char* filename)
 
 int sort_data(PARSER* parser, PARSER_SORT_SETTINGS settings)
 {
-    if (!parser || parser->container->line_count == 0 || parser->container->column_count == 0)
+    if (!parser || parser->container.line_count == 0 || parser->container.column_count == 0)
         {
             PARSER_LOG_CRITICAL("INVALID PARSER CONTAINER STATE");
             return 1;
         }
 
-    PARSER_CONTAINER* container = parser->container;
+    PARSER_CONTAINER* container = &parser->container;
     size_t line_count = container->line_count;
     size_t target_column_idx = -1;
 
@@ -172,6 +191,7 @@ int sort_data(PARSER* parser, PARSER_SORT_SETTINGS settings)
                             PARSER_LOG_INFO("COMAPRING WITH: %s", first_line[i].value.string);
                             if (first_line->type == STRING_TYPE && strcasecmp(first_line[i].value.string, settings.value.column_name) == 0)
                                 {
+                                	PARSER_LOG_INFO("FOUND THE HEADER %s [COLUMN: %zu]", settings.value.column_name, i);
                                     found = 1;
                                     break;
                                 }
@@ -194,6 +214,12 @@ int sort_data(PARSER* parser, PARSER_SORT_SETTINGS settings)
 
     size_t start_index = (container->header_included) ? 1 : 0;
     size_t data_count = line_count - start_index;
+
+    if (data_count <= 0)
+        {
+            PARSER_LOG_CRITICAL("NOTHING TO SORT");
+            return 1;
+        }
 
     size_t* indices = malloc(data_count * sizeof(size_t));
     LINE_INFO* sorted_info = malloc(line_count * sizeof(LINE_INFO));
@@ -243,11 +269,11 @@ int save_data(PARSER* parser, const char* filename)
             return 1;
         }
 
-    size_t line_count = parser->container->line_count;
+    size_t line_count = parser->container.line_count;
     char splitter = parser->settings.splitter;
 
-    CONTAINER_DATA** lines = parser->container->lines;
-    LINE_INFO* info = parser->container->info;
+    CONTAINER_DATA** lines = parser->container.lines;
+    LINE_INFO* info = parser->container.info;
 
     for (size_t i = 0; i < line_count; i++)
         {
@@ -256,13 +282,13 @@ int save_data(PARSER* parser, const char* filename)
 
             for (size_t j = 0; j < token_count - 1; j++)
                 {
-                    CONTAINER_DATA data = lines[i][j];
-                    handlers[data.type].save(data, target_file, splitter);
+                    CONTAINER_DATA* data = &current_data[j];
+                    handlers[data->type].save(data, target_file, splitter);
                 }
 
             // last value without the splitter symbol
-            CONTAINER_DATA last_data = current_data[token_count - 1];
-            handlers[last_data.type].save(last_data, target_file, '\n');
+            CONTAINER_DATA* last_data = &current_data[token_count - 1];
+            handlers[last_data->type].save(last_data, target_file, '\n');
         }
 
     fclose(target_file);
@@ -276,13 +302,13 @@ int print_all_data(PARSER* parser)
 
 int print_data(PARSER* parser, size_t how_much_to_print)
 {
-    if (!parser || parser->container == NULL)
+    if (!parser || parser->container.lines == NULL)
         {
             PARSER_LOG_CRITICAL("INVALID PARSER STATE FOR PRINTING");
             return 1;
         }
 
-    PARSER_CONTAINER container = *parser->container;
+    PARSER_CONTAINER container = parser->container;
     size_t line_count = container.line_count;
 
     if (how_much_to_print > line_count) how_much_to_print = line_count;
@@ -299,7 +325,7 @@ int print_data(PARSER* parser, size_t how_much_to_print)
                 printf("Line %zu: ", i);
 
             for (size_t j = 0; j < container.info[i].token_count; j++)
-                handlers[current_line[j].type].print(current_line[j]);
+                handlers[current_line[j].type].print(&current_line[j]);
             putchar('\n');
         }
 
@@ -308,20 +334,23 @@ int print_data(PARSER* parser, size_t how_much_to_print)
 
 void free_parser(PARSER* parser)
 {
-    if (!parser || parser->container == NULL) return;
+    if (!parser || parser->container.lines == NULL)
+	{
+		PARSER_LOG_WARNING("YOU CANNOT RELEASE THE PARSER USING THIS FUNCTION BECAUSE NO DATA HAS BEEN PROCESSED. TRY USING free(<your parser object>) INSTEAD!");
+		return;
+	}
 
-    for (size_t i = 0; i < parser->container->line_count; i++)
+    for (size_t i = 0; i < parser->container.line_count; i++)
         {
-            for (size_t j = 0; j < parser->container->info[i].token_count; j++)
-                if (parser->container->lines[i][j].type == STRING_TYPE)
-                    free(parser->container->lines[i][j].value.string);
-            free(parser->container->lines[i]);
+            for (size_t j = 0; j < parser->container.info[i].token_count; j++)
+                if (parser->container.lines[i][j].type == STRING_TYPE)
+                    free(parser->container.lines[i][j].value.string);
+            free(parser->container.lines[i]);
         }
 
-    free(parser->container->lines);
-    free(parser->container->info);
-    free(parser->container);
-    parser->container = NULL;
+    free(parser->container.lines);
+    free(parser->container.info);
+    free(parser);
 }
 
 PARSER_SETTINGS create_parser_settings()
@@ -350,7 +379,7 @@ void change_default_sort_settings(PARSER_SORT_SETTINGS settings)
 
 /* =============== PRIVATE ================ */
 // Initialization functions
-void _init_parser()
+static void _init_parser()
 {
     PARSER_LOG_INFO("Initializing the system.");
     if (parser_settings_initialized ^ 1)
@@ -367,7 +396,7 @@ void _init_parser()
     system_initialized = 1;
 }
 
-PARSER_SETTINGS _create_default_parser_settings()
+static PARSER_SETTINGS _create_default_parser_settings()
 {
     PARSER_SETTINGS settings;
     settings.splitter = ';';
@@ -377,7 +406,7 @@ PARSER_SETTINGS _create_default_parser_settings()
     return settings;
 }
 
-PARSER_SORT_SETTINGS _create_default_parser_sort_settings()
+static PARSER_SORT_SETTINGS _create_default_parser_sort_settings()
 {
     PARSER_SORT_SETTINGS settings;
     settings.tag = COLUMN_INDEX;
@@ -388,12 +417,12 @@ PARSER_SORT_SETTINGS _create_default_parser_sort_settings()
 }
 
 // Parser functions
-void _parse_file(PARSER* parser, P_PFILE file_to_parse)
+static int _parse_file(PARSER* parser, P_PFILE file_to_parse)
 {
     char buffer[BUFFER_CAPACITY];
     size_t line_count = 0;
     size_t column_count = 0;
-    size_t capacity = 10;
+    size_t capacity = MIN_CAPACITY;
 
     CONTAINER_DATA** lines = malloc(capacity * sizeof(CONTAINER_DATA*));
     LINE_INFO* info = malloc(capacity * sizeof(LINE_INFO));
@@ -403,7 +432,7 @@ void _parse_file(PARSER* parser, P_PFILE file_to_parse)
             PARSER_LOG_CRITICAL("MEMORY ALLOCATION FAILED DURING PARSING");
             free(lines);
             free(info);
-            return;
+            return 1;
         }
 
     const char splitter = parser->settings.splitter;
@@ -413,22 +442,17 @@ void _parse_file(PARSER* parser, P_PFILE file_to_parse)
     // handling the first line here ( outside the loop ) to avoid repeated checks
     if (fgets(buffer, sizeof(buffer), file_to_parse))
         {
-            if (ignore_first_line ^ 1)
+            if (!ignore_first_line)
                 {
                     if (first_line_as_header)
                         info[line_count].is_header = 1;
                     else
                         info[line_count].is_header = 0;
+
                     size_t token_count;
-                    PARSER_LOG_INFO("Parsing line %d: %s", line_count, buffer);
+                    PARSER_LOG_DEBUG("PARSING LINE [%d]: %s", line_count, buffer);
                     lines[line_count] = _parse_line(buffer, splitter, &token_count);
-                    info[line_count].token_count = token_count;
-
-                    // checking for 'bad' headers and making them str
-                    if (info[line_count].is_header)
-                        _fix_headers(lines, token_count);
-
-                    line_count++;
+                    info[line_count++].token_count = token_count;
                 }
         }
 
@@ -437,13 +461,21 @@ void _parse_file(PARSER* parser, P_PFILE file_to_parse)
         {
             if (line_count >= capacity)
                 {
-                    capacity *= 2;
+                    INCREASE_CAP(&capacity);
                     lines = realloc(lines, capacity * sizeof(CONTAINER_DATA*));
                     info = realloc(info, capacity * sizeof(LINE_INFO));
+
+                    if (!lines || !info)
+                        {
+                            free(lines);
+                            free(info);
+                            return 1;
+                        }
                 }
 
+            PARSER_LOG_DEBUG("PARSING LINE [%d]: %s", line_count, buffer);
             size_t token_count;
-            PARSER_LOG_INFO("Parsing line %d: %s", line_count, buffer);
+            
             lines[line_count] = _parse_line(buffer, splitter, &token_count);
             info[line_count].token_count = token_count;
             info[line_count].is_header = 0;
@@ -453,15 +485,29 @@ void _parse_file(PARSER* parser, P_PFILE file_to_parse)
             line_count++;
         }
 
-    parser->container = malloc(sizeof(PARSER_CONTAINER));
-    parser->container->lines = lines;
-    parser->container->info = info;
-    parser->container->column_count = column_count;
-    parser->container->line_count = line_count;
-    parser->container->header_included = first_line_as_header;
+    // checking if we can free some memory
+    if (line_count < capacity)
+        {
+            lines = realloc(lines, line_count * sizeof(CONTAINER_DATA*));
+            info = realloc(info, line_count * sizeof(LINE_INFO));
+        }
+
+    parser->container.lines = lines;
+    parser->container.info = info;
+    parser->container.column_count = column_count;
+    parser->container.line_count = line_count;
+    parser->container.header_included = first_line_as_header;
+
+    // checking for 'bad' headers and making them str
+    _check_and_fix_header(parser);
+
+    // fixing all the remaining artefacts
+    _check_and_fix_parsed_data(parser);
+
+    return 0;
 }
 
-CONTAINER_DATA* _parse_line(const char* line, char splitter, size_t* token_count)
+static CONTAINER_DATA* _parse_line(const char* line, char splitter, size_t* token_count)
 {
     char* line_copy = strdup(line);
     if (!line_copy)
@@ -491,7 +537,7 @@ CONTAINER_DATA* _parse_line(const char* line, char splitter, size_t* token_count
                     *end = '\0';
                     if (count >= capacity)
                         {
-                            capacity *= 2;
+                            INCREASE_CAP(&capacity);
                             tokens = realloc(tokens, capacity * sizeof(CONTAINER_DATA));
                         }
                     tokens[count++] = _parse_token(start);
@@ -513,10 +559,15 @@ CONTAINER_DATA* _parse_line(const char* line, char splitter, size_t* token_count
 
     free(line_copy);
     *token_count = count;
+
+    // checking if we can free some memory
+    if (count < capacity)
+        tokens = realloc(tokens, count * sizeof(CONTAINER_DATA));
+
     return tokens;
 }
 
-CONTAINER_DATA _parse_token(char* token)
+static CONTAINER_DATA _parse_token(char* token)
 {
     CONTAINER_DATA data;
 
@@ -568,7 +619,7 @@ CONTAINER_DATA _parse_token(char* token)
     return data;
 }
 
-char* _trim_whitespace(char* str)
+static char* _trim_whitespace(char* str)
 {
     char* end;
 
@@ -588,7 +639,7 @@ char* _trim_whitespace(char* str)
     return str;
 }
 
-char* _trim_newlines(char* str)
+static char* _trim_newlines(char* str)
 {
     size_t len = strlen(str);
 
@@ -596,14 +647,14 @@ char* _trim_newlines(char* str)
     while (search_index < len)
         {
             memmove(&str[search_index], &str[search_index + 1], len - search_index);
-            len--;
+            --len;
             search_index = strcspn(str, "\n\r");
         }
 
     return str;
 }
 
-int _check_for_quotes(char* str, size_t len)
+static int _check_for_quotes(char* str, size_t len)
 {
     if (len >= 2 && str[0] == '"' && str[len-1] == '"')
         {
@@ -616,11 +667,11 @@ int _check_for_quotes(char* str, size_t len)
     return 0;
 }
 
-char* _remove_quotes(char* str)
+static char* _remove_quotes(char* str)
 {
     size_t len = strlen(str);
 
-    if (_check_for_quotes(str, len) == 1)
+    while (_check_for_quotes(str, len) == 1)
         {
             // remove surrounding quotes somehow
             memmove(str, str + 1, len - 2);
@@ -629,36 +680,98 @@ char* _remove_quotes(char* str)
     return str;
 }
 
-void* _fix_headers(CONTAINER_DATA** lines, size_t token_count)
+static char* _create_new_header(size_t i)
 {
-    for (size_t i = 0; i < token_count; i++)
+    char* new_char = malloc(HEADER_MAX_WIDTH);
+    snprintf(new_char, HEADER_MAX_WIDTH, PARSER_COLUMN_CUSTOM_NAME, i);
+    return new_char;
+}
+
+static void _check_and_fix_header(P_PARSER parser)
+{
+    if (!parser->container.header_included || !parser->container.info[0].is_header)
         {
-            CONTAINER_DATA* current_data = &lines[0][i]; // thinking that lines[0] is header line
+            PARSER_LOG_WARNING("[NO NEED TO FIX ANYTHING] OR [CAN\'T FIX THE HEADER LINE BECAUSE OF THE CONTAINER WRONG STATES]");
+            return;
+        }
+
+    PARSER_CONTAINER* data = &parser->container;
+    CONTAINER_DATA* header_line = data->lines[0];
+    LINE_INFO* header_info = &data->info[0];
+
+    size_t header_column_count = header_info->token_count;
+    size_t column_count = data->column_count;
+    size_t i;
+
+    // first we fix current headers
+    for (i = 0; i < header_column_count; i++)
+        {
+            CONTAINER_DATA* current_data = &header_line[i];
             if (current_data->type == INTEGER_TYPE
                     || current_data->type == FLOAT_TYPE)
                 {
-                    current_data->value.string = _container_value_to_str(*current_data);
-                    current_data->type = STRING_TYPE;
+                    _set_string(current_data, _container_value_to_str(*current_data));
+                    PARSER_LOG_INFO("NEW FIXED HEADER IS %s", current_data->value.string);
                 }
             else if(current_data->type == NULL_TYPE)
                 {
-                    char* new_char = malloc(32);
-                    sprintf(new_char, PARSER_COLUMN_CUSTOM_NAME, i);
-                    current_data->type = STRING_TYPE;
-                    current_data->value.string = new_char;
+                    _set_string(current_data, _create_new_header(i));
+                    PARSER_LOG_INFO("NEW FIXED HEADER IS %s", current_data->value.string);
+                }
+        }
+
+    // after we add a new header if there is need in that
+    if (header_column_count < column_count)
+        {
+            PARSER_LOG_INFO("FIX IS NEEDED, PREPARING TO FILL THE HEADER LINE WITH %zu MORE VALUES", column_count - header_column_count);
+            header_line = realloc(header_line, column_count * sizeof(CONTAINER_DATA));
+            data->lines[0] = header_line;
+            header_info->token_count = column_count;
+            for (; i < column_count; i++)
+                {
+                    _set_string(&header_line[i], _create_new_header(i));
+                    PARSER_LOG_INFO("NEW HEADER IS %s", header_line[i].value.string);
+                }
+        }
+}
+
+static void _check_and_fix_parsed_data(P_PARSER parser)
+{
+    PARSER_CONTAINER* container = &parser->container;
+    CONTAINER_DATA** lines = container->lines;
+    LINE_INFO* info = container->info;
+    size_t column_count = container->column_count;
+    size_t line_count = container->line_count;
+
+    // iterating over all the values to find some 'broken' values
+    for (size_t i = 0; i < line_count; i++)
+        {
+            CONTAINER_DATA* current_line = lines[i];
+            size_t line_column_count = info[i].token_count;
+
+            if (line_column_count < column_count)
+                {
+                    PARSER_LOG_INFO("ADDING %zu NULL VALUES TO THE %zu LINE", column_count - line_column_count, i);
+                    current_line = realloc(current_line, column_count * sizeof(CONTAINER_DATA));
+                    lines[i] = current_line;
+                    info[i].token_count = column_count;
+                    for (size_t j = line_column_count; j < column_count; j++)
+                        {
+                            _set_null(&current_line[j]);
+                        }
                 }
         }
 }
 
 // Sorting functions
-int _compare_cells(
+static int _compare_cells(
     const size_t a_idx,
     const size_t b_idx,
     const size_t sort_column,
     PARSER* parser)
 {
-    PARSER_CONTAINER* container = parser->container;
-    PARSER_SORT_SETTINGS settings = parser->sort_settings;
+    PARSER_CONTAINER* container = &parser->container;
+    PARSER_SORT_SETTINGS* settings = &parser->sort_settings;
 
     CONTAINER_DATA* data_a = container->lines[a_idx];
     CONTAINER_DATA* data_b = container->lines[b_idx];
@@ -682,7 +795,7 @@ int _compare_cells(
                         else result =  0;
                         break;
                     case STRING_TYPE:
-                        if (settings.case_sensitive)
+                        if (settings->case_sensitive)
                             result = strcmp(cell_a.value.string, cell_b.value.string);
                         else
                             result = strcasecmp(cell_a.value.string, cell_b.value.string);
@@ -690,14 +803,21 @@ int _compare_cells(
                     case NULL_TYPE:
                         result =  0; // equality muthafaka
                         break;
+                    default:
+                    	exit(1); // just in case
                 }
         }
+    else if (cell_a.type == NULL_TYPE || cell_b.type == NULL_TYPE)
+    {
+    	if (cell_a.type == NULL_TYPE) result = 1;
+    	else result = -1;
+	}
     else
         {
             char* str_a = _container_value_to_str(cell_a);
             char* str_b = _container_value_to_str(cell_b);
 
-            if (settings.case_sensitive)
+            if (settings->case_sensitive)
                 result = strcmp(str_a, str_b);
             else
                 result = strcasecmp(str_a, str_b);
@@ -705,14 +825,52 @@ int _compare_cells(
             free(str_a);
             free(str_b);
         }
-
-    if (settings.direction == DESCENDING)
+        
+    if (settings->direction == DESCENDING)
         result = -result;
 
+    PARSER_LOG_DEBUG("[COMPARE FUNCTION] - COMPARING RESULT: %d", result);
     return result;
 }
 
-char* _container_value_to_str(CONTAINER_DATA data)
+static void _quick_sort(PARSER* parser, size_t sort_column, QuickSortComp comp_func, size_t left, size_t right, size_t* indices)
+{
+    if (left < right)
+        {
+            size_t pr = _partition(parser, sort_column, comp_func, left, right, indices);
+            if (pr == 0) return; // if equal then we dont give a shit and return
+            _quick_sort(parser, sort_column, comp_func, left, pr - 1, indices);
+            _quick_sort(parser, sort_column, comp_func, pr + 1, right, indices);
+        }
+}
+
+static size_t _partition(PARSER* parser, size_t sort_column, QuickSortComp comp_func, size_t left, size_t right, size_t* indices)
+{
+	PARSER_LOG_DEBUG("[QUICK SORT] - LEFT: %zu, RIGHT: %zu", left, right);
+    size_t i = left - 1, j, pivot = right;
+    for (j = left; j < right; j++)
+        {
+            if (comp_func(indices[j], indices[pivot], sort_column, parser) < 0)
+                {
+                    ++i;
+                    _swap(&indices[i], &indices[j]);
+                }
+        }
+    size_t pr = i + 1;
+    _swap(&indices[pr], &indices[pivot]);
+    PARSER_LOG_DEBUG("[QUICK SORT] - PARTITION KEY: %zu", pr);
+    return pr;
+}
+
+static inline void _swap(size_t* a, size_t* b)
+{
+    size_t temp = *a;
+    *a = *b;
+    *b = temp;
+}
+
+// Utilities (global)
+static char* _container_value_to_str(CONTAINER_DATA data)
 {
     char* str_buffer = malloc(BUFFER_CAPACITY);
 
@@ -735,35 +893,14 @@ char* _container_value_to_str(CONTAINER_DATA data)
     return str_buffer;
 }
 
-void _quick_sort(PARSER* parser, size_t sort_column, QuickSortComp comp_func, size_t left, size_t right, size_t* indices)
+static inline void _set_string(CONTAINER_DATA* data, char* str)
 {
-    if (left < right)
-        {
-            size_t pr = _partition(parser, sort_column, comp_func, left, right, indices);
-            _quick_sort(parser, sort_column, comp_func, left, pr - 1, indices);
-            _quick_sort(parser, sort_column, comp_func, pr + 1, right, indices);
-        }
+    data->type = STRING_TYPE;
+    data->value.string = str;
 }
 
-size_t _partition(PARSER* parser, size_t sort_column, QuickSortComp comp_func, size_t left, size_t right, size_t* indices)
+static inline void _set_null(CONTAINER_DATA* data)
 {
-    size_t i = left - 1, j, pivot = right;
-    for (j = left; j < right; j++)
-        {
-            if (comp_func(indices[j], indices[pivot], sort_column, parser) < 0)
-                {
-                    ++i;
-                    _swap(&indices[i], &indices[j]);
-                }
-        }
-    size_t pr = i + 1;
-    _swap(&indices[pr], &indices[pivot]);
-    return pr;
-}
-
-void _swap(size_t* a, size_t* b)
-{
-    size_t temp = *a;
-    *a = *b;
-    *b = temp;
+    data->type = NULL_TYPE;
+    data->value.null = NULL;
 }

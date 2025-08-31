@@ -21,9 +21,7 @@
 #include <string.h>
 #endif
 
-#ifndef _CTYPE_H_
 #include <ctype.h>
-#endif
 
 /* =============== DEBUGGER SETUP ================ */
 #define LOGLEVEL_CRITICAL 0
@@ -139,12 +137,14 @@ typedef struct __parser_sort_settings
 
 typedef struct __parser_object
 {
-    PARSER_CONTAINER* container;
+    PARSER_CONTAINER container;
     PARSER_SORT_SETTINGS sort_settings;
     PARSER_SETTINGS settings;
 } PARSER;
 
-PARSER create_parser();
+typedef PARSER* P_PARSER;
+
+P_PARSER create_parser();
 int parse_file(PARSER* parser, const char* filename);
 int sort_data(PARSER* parser, PARSER_SORT_SETTINGS settings);
 int save_data(PARSER* parser, const char* filename);
