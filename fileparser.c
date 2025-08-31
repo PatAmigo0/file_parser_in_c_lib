@@ -17,6 +17,15 @@
 typedef FILE* P_PFILE;
 typedef int (*QuickSortComp)(size_t, size_t, size_t, PARSER*);
 
+typedef void (*PrintHandler)(CONTAINER_DATA);
+typedef void (*SaveHandler)(CONTAINER_DATA, FILE*, char);
+
+typedef struct __parser_type_handelrs
+{
+    PrintHandler print;
+    SaveHandler save;
+} TYPE_HANDLERS;
+
 /* =============== PRIVATE FUNCTIONS ================ */
 void _init_parser();
 PARSER_SETTINGS _create_default_parser_settings();
@@ -41,6 +50,49 @@ int _compare_cells(
 void _quick_sort(PARSER* parser, size_t sort_column, QuickSortComp comp_func, size_t left, size_t right, size_t* indices);
 size_t _partition(PARSER* parser, size_t sort_column, QuickSortComp comp_func, size_t left, size_t right, size_t* indices);
 void _swap(size_t* a, size_t* b);
+
+/* =============== HANDLER FUNCTIONS ================ */
+void _print_string(CONTAINER_DATA data)
+{
+    printf("\"%s\" ", data.value.string);
+}
+void _print_integer(CONTAINER_DATA data)
+{
+    printf("%llu ", data.value.integer);
+}
+void _print_float(CONTAINER_DATA data)
+{
+    printf("%Lf ", data.value.floating);
+}
+void _print_null(CONTAINER_DATA data)
+{
+    printf("NULL ");
+}
+
+void _save_string(CONTAINER_DATA data, FILE* file, char splitter)
+{
+    fprintf(file, "%s%c", data.value.string, splitter);
+}
+void _save_integer(CONTAINER_DATA data, FILE* file, char splitter)
+{
+    fprintf(file, "%llu%c", data.value.integer, splitter);
+}
+void _save_float(CONTAINER_DATA data, FILE* file, char splitter)
+{
+    fprintf(file, "%Lf%c", data.value.floating, splitter);
+}
+void _save_null(CONTAINER_DATA data, FILE* file, char splitter)
+{
+    fprintf(file, "NULL%c", splitter);
+}
+
+static TYPE_HANDLERS handlers[] =
+{
+    [STRING_TYPE]  = {_print_string,  _save_string},
+    [INTEGER_TYPE] = {_print_integer, _save_integer},
+    [FLOAT_TYPE]   = {_print_float,   _save_float},
+    [NULL_TYPE]    = {_print_null,    _save_null}
+};
 
 /* =============== STATIC VARS ================ */
 PARSER_SETTINGS DEFAULT_PARSER_SETTINGS;
@@ -67,7 +119,10 @@ int parse_file(PARSER* parser, const char* filename)
 
     P_PFILE target_file = fopen(filename, "r");
     if (target_file == NULL)
-        return 1;
+        {
+            PARSER_LOG_CRITICAL("FAILED TO OPEN FILE: %s", filename);
+            return 1;
+        }
 
     _parse_file(parser, target_file);
     fclose(target_file);
@@ -77,7 +132,11 @@ int parse_file(PARSER* parser, const char* filename)
 
 int sort_data(PARSER* parser, PARSER_SORT_SETTINGS settings)
 {
-    if (!parser || parser->container->line_count == 0 || parser->container->column_count == 0) return 1;
+    if (!parser || parser->container->line_count == 0 || parser->container->column_count == 0)
+        {
+            PARSER_LOG_CRITICAL("INVALID PARSER CONTAINER STATE");
+            return 1;
+        }
 
     PARSER_CONTAINER* container = parser->container;
     size_t line_count = container->line_count;
@@ -86,27 +145,44 @@ int sort_data(PARSER* parser, PARSER_SORT_SETTINGS settings)
     // checking if everything is okay and getting column idx
     if (settings.tag == COLUMN_INDEX)
         {
-            if (settings.value.column_index >= container->column_count) return 1;
+            if (settings.value.column_index >= container->column_count)
+                {
+                    PARSER_LOG_CRITICAL("%d EXCEEDS NUMBER OF COLUMNS IN PARSED DATA (MAX: %d)",
+                                        settings.value.column_index, container->column_count);
+                    return 1;
+                }
             else target_column_idx = settings.value.column_index;
         }
     else if (settings.tag == COLUMN_NAME)
         {
             if (container->header_included ^ 1)
-                return 1;
+                {
+                    PARSER_LOG_CRITICAL("TRYING TO SORT FOR %s BUT NO HEADER IN PARSED DATA", settings.value.column_name);
+                    return 1;
+                }
+
             else
                 {
                     int found = 0;
                     size_t i;
                     CONTAINER_DATA* first_line = container->lines[0];
+                    PARSER_LOG_INFO("LOOKING FOR: %s", settings.value.column_name);
                     for (i = 0; i < container->info[0].token_count && found == 0; i++)
-                        if (first_line->type == STRING_TYPE && strcasecmp(first_line->value.string, settings.value.column_name) == 0)
-                            {
-                                found = 1;
-                                break;
-                            }
+                        {
+                            PARSER_LOG_INFO("COMAPRING WITH: %s", first_line[i].value.string);
+                            if (first_line->type == STRING_TYPE && strcasecmp(first_line[i].value.string, settings.value.column_name) == 0)
+                                {
+                                    found = 1;
+                                    break;
+                                }
 
+                        }
                     if (found) target_column_idx = i;
-                    else return 1;
+                    else
+                        {
+                            PARSER_LOG_CRITICAL("COULDN'T FIND THE HEADER: %s", settings.value.column_name);
+                            return 1;
+                        }
                 }
         }
 
@@ -123,9 +199,18 @@ int sort_data(PARSER* parser, PARSER_SORT_SETTINGS settings)
     LINE_INFO* sorted_info = malloc(line_count * sizeof(LINE_INFO));
     CONTAINER_DATA** sorted_lines = malloc(line_count * sizeof(CONTAINER_DATA*));
 
+    if (!indices || !sorted_info || !sorted_lines)
+        {
+            PARSER_LOG_CRITICAL("MEMORY ALLOCATION FAILED DURING SORT");
+            free(indices);
+            free(sorted_info);
+            free(sorted_lines);
+            return 1;
+        }
+
     for (size_t i = 0; i < data_count; i++) indices[i] = start_index + i;
 
-    _quick_sort(parser, target_column_idx, _compare_cells, 0, data_count-1, indices);
+    _quick_sort(parser, target_column_idx, _compare_cells, 0, data_count-1, indices); // shitty sort
 
     for (size_t i = 0; i < data_count; i++)
         {
@@ -152,8 +237,11 @@ int save_data(PARSER* parser, const char* filename)
 {
     P_PFILE target_file = fopen(filename, "w");
 
-    if (target_file == NULL)
-        return 1;
+    if (target_file == NULL || !parser)
+        {
+            PARSER_LOG_CRITICAL("FAILED TO OPEN FILE FOR WRITING: %s", filename);
+            return 1;
+        }
 
     size_t line_count = parser->container->line_count;
     char splitter = parser->settings.splitter;
@@ -164,48 +252,20 @@ int save_data(PARSER* parser, const char* filename)
     for (size_t i = 0; i < line_count; i++)
         {
             CONTAINER_DATA* current_data = lines[i];
+            size_t token_count = info[i].token_count;
 
-            for (size_t j = 0; j < info[i].token_count - 1; j++)
+            for (size_t j = 0; j < token_count - 1; j++)
                 {
                     CONTAINER_DATA data = lines[i][j];
-                    switch (data.type)
-                        {
-                            case STRING_TYPE:
-                                fprintf(target_file, "%s%c", data.value.string, splitter);
-                                break;
-                            case INTEGER_TYPE:
-                                fprintf(target_file, "%llu%c", data.value.integer, splitter);
-                                break;
-                            case FLOAT_TYPE:
-                                fprintf(target_file, "%Lf%c", data.value.floating, splitter);
-                                break;
-                            case NULL_TYPE:
-                                fprintf(target_file, "NULL%c", splitter);
-                                break;
-                        }
+                    handlers[data.type].save(data, target_file, splitter);
                 }
 
-            // last value without the %c symbol
-            CONTAINER_DATA data = lines[i][info[i].token_count - 1];
-            switch (data.type)
-                {
-                    case STRING_TYPE:
-                        fprintf(target_file, "\%s", data.value.string);
-                        break;
-                    case INTEGER_TYPE:
-                        fprintf(target_file, "%llu", data.value.integer);
-                        break;
-                    case FLOAT_TYPE:
-                        fprintf(target_file, "%Lf", data.value.floating);
-                        break;
-                    case NULL_TYPE:
-                        fprintf(target_file, "NULL");
-                        break;
-                }
-
-            fputc('\n', target_file);
+            // last value without the splitter symbol
+            CONTAINER_DATA last_data = current_data[token_count - 1];
+            handlers[last_data.type].save(last_data, target_file, '\n');
         }
 
+    fclose(target_file);
     return 0;
 }
 
@@ -217,7 +277,10 @@ int print_all_data(PARSER* parser)
 int print_data(PARSER* parser, size_t how_much_to_print)
 {
     if (!parser || parser->container == NULL)
-        return 1;
+        {
+            PARSER_LOG_CRITICAL("INVALID PARSER STATE FOR PRINTING");
+            return 1;
+        }
 
     PARSER_CONTAINER container = *parser->container;
     size_t line_count = container.line_count;
@@ -236,26 +299,7 @@ int print_data(PARSER* parser, size_t how_much_to_print)
                 printf("Line %zu: ", i);
 
             for (size_t j = 0; j < container.info[i].token_count; j++)
-                {
-                    CONTAINER_DATA data = current_line[j];
-                    switch (data.type)
-                        {
-                            case STRING_TYPE:
-                                printf("\"%s\" ", data.value.string);
-                                break;
-                            case INTEGER_TYPE:
-                                printf("%llu ", data.value.integer);
-                                break;
-                            case FLOAT_TYPE:
-                                printf("%Lf ", data.value.floating);
-                                break;
-                            case NULL_TYPE:
-                                printf("NULL ");
-                                break;
-                            default:
-                                printf("NO DATA ");
-                        }
-                }
+                handlers[current_line[j].type].print(current_line[j]);
             putchar('\n');
         }
 
@@ -264,7 +308,7 @@ int print_data(PARSER* parser, size_t how_much_to_print)
 
 void free_parser(PARSER* parser)
 {
-    if (parser->container == NULL) return;
+    if (!parser || parser->container == NULL) return;
 
     for (size_t i = 0; i < parser->container->line_count; i++)
         {
@@ -308,6 +352,7 @@ void change_default_sort_settings(PARSER_SORT_SETTINGS settings)
 // Initialization functions
 void _init_parser()
 {
+    PARSER_LOG_INFO("Initializing the system.");
     if (parser_settings_initialized ^ 1)
         {
             change_default_settings(
@@ -318,6 +363,7 @@ void _init_parser()
             change_default_sort_settings(
                 _create_default_parser_sort_settings());
         }
+
     system_initialized = 1;
 }
 
@@ -352,6 +398,14 @@ void _parse_file(PARSER* parser, P_PFILE file_to_parse)
     CONTAINER_DATA** lines = malloc(capacity * sizeof(CONTAINER_DATA*));
     LINE_INFO* info = malloc(capacity * sizeof(LINE_INFO));
 
+    if (!lines || !info)
+        {
+            PARSER_LOG_CRITICAL("MEMORY ALLOCATION FAILED DURING PARSING");
+            free(lines);
+            free(info);
+            return;
+        }
+
     const char splitter = parser->settings.splitter;
     const int ignore_first_line = parser->settings.ignore_first_line;
     const int first_line_as_header = (ignore_first_line) ? 0 : parser->settings.first_line_as_header;
@@ -366,6 +420,7 @@ void _parse_file(PARSER* parser, P_PFILE file_to_parse)
                     else
                         info[line_count].is_header = 0;
                     size_t token_count;
+                    PARSER_LOG_INFO("Parsing line %d: %s", line_count, buffer);
                     lines[line_count] = _parse_line(buffer, splitter, &token_count);
                     info[line_count].token_count = token_count;
 
@@ -388,6 +443,7 @@ void _parse_file(PARSER* parser, P_PFILE file_to_parse)
                 }
 
             size_t token_count;
+            PARSER_LOG_INFO("Parsing line %d: %s", line_count, buffer);
             lines[line_count] = _parse_line(buffer, splitter, &token_count);
             info[line_count].token_count = token_count;
             info[line_count].is_header = 0;
@@ -408,9 +464,22 @@ void _parse_file(PARSER* parser, P_PFILE file_to_parse)
 CONTAINER_DATA* _parse_line(const char* line, char splitter, size_t* token_count)
 {
     char* line_copy = strdup(line);
+    if (!line_copy)
+        {
+            PARSER_LOG_CRITICAL("MEMORY ALLOCATION FAILED FOR LINE COPY");
+            return NULL;
+        }
+
     size_t count = 0;
     size_t capacity = INITIAL_TOKENS_CAPACITY;
+
     CONTAINER_DATA* tokens = malloc(capacity * sizeof(CONTAINER_DATA));
+    if (!tokens)
+        {
+            PARSER_LOG_CRITICAL("MEMORY ALLOCATION FAILED FOR TOKENS");
+            free(line_copy);
+            return NULL;
+        }
 
     char* start = line_copy;
     char* end = line_copy;

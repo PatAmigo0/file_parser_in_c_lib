@@ -1,3 +1,9 @@
+/**
+ * Made by Arseniy Kuskov
+ * This file has no copyright assigned and is placed in the Public Domain.
+ * No warranty is given.
+ */
+
 #pragma once
 
 #ifndef _FILEPARSER_H_
@@ -19,6 +25,42 @@
 #include <ctype.h>
 #endif
 
+/* =============== DEBUGGER SETUP ================ */
+#define LOGLEVEL_CRITICAL 0
+#define LOGLEVEL_WARNING  1
+#define LOGLEVEL_INFO     2
+#define LOGLEVEL_DEBUG    3
+#define LOGLEVEL_NONE     4
+
+#ifndef LOG_LEVEL
+#define LOG_LEVEL LOGLEVEL_INFO // CHANGE THIS TO LOGLEVEL_NONE IF YOU WANT FOR THIS LIB TO SHUT UP
+#endif
+
+static const char* loglevels[] =
+{
+    [LOGLEVEL_CRITICAL] = "CRIT",
+    [LOGLEVEL_WARNING] = "WARN",
+    [LOGLEVEL_INFO] = "INFO",
+    [LOGLEVEL_DEBUG] = "DEBUG",
+    [LOGLEVEL_NONE] = "NONE"
+};
+
+#if LOG_LEVEL > LOGLEVEL_DEBUG
+#define __parser_log(level, format, ...) ((void)0)
+#else
+#define __parser_log(level, format, ...) \
+    do { \
+            if (level <= LOG_LEVEL)\
+                fprintf(stderr, "[%s]: %s:%s:%zu: " format "\n", loglevels[level], __func__, __FILE__, __LINE__, ##__VA_ARGS__); \
+        } while (0)
+#endif
+
+#define PARSER_LOG_CRITICAL(format, ...) __parser_log(LOGLEVEL_CRITICAL, format, ##__VA_ARGS__)
+#define PARSER_LOG_WARNING(format, ...) __parser_log(LOGLEVEL_WARNING, format, ##__VA_ARGS__)
+#define PARSER_LOG_INFO(format, ...) __parser_log(LOGLEVEL_INFO, format, ##__VA_ARGS__)
+#define PARSER_LOG_DEBUG(format, ...) __parser_log(LOGLEVEL_DEBUG, format, ##__VA_ARGS__)
+
+/* =============== PUBLIC TYPES ================ */
 typedef unsigned long long ull;
 typedef long double bigfloat;
 
