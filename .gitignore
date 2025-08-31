@@ -1,4 +1,7 @@
-/.dev
-/.layout
-/.o
-/.win
+*.dev
+*.layout
+*.o
+*.win
+*.csv
+*.exe
+sort_file.c
