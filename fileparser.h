@@ -23,6 +23,9 @@
 
 #include <ctype.h>
 
+#define CYRYLLIC_ENCODING 1251
+#define UTF_8_ENCODING 65001
+
 /* =============== DEBUGGER SETUP ================ */
 #define LOGLEVEL_CRITICAL 0
 #define LOGLEVEL_WARNING  1
@@ -31,7 +34,7 @@
 #define LOGLEVEL_NONE     4
 
 #ifndef LOG_LEVEL
-#define LOG_LEVEL LOGLEVEL_INFO // CHANGE THIS TO LOGLEVEL_NONE IF YOU WANT FOR THIS LIB TO SHUT UP
+#define LOG_LEVEL LOGLEVEL_NONE // CHANGE THIS TO LOGLEVEL_NONE IF YOU WANT FOR THIS LIB TO SHUT UP
 #endif
 
 static const char* loglevels[] =
