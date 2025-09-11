@@ -34,7 +34,7 @@
 #define LOGLEVEL_NONE     4
 
 #ifndef LOG_LEVEL
-#define LOG_LEVEL LOGLEVEL_NONE // CHANGE THIS TO LOGLEVEL_NONE IF YOU WANT FOR THIS LIB TO SHUT UP
+#define LOG_LEVEL LOGLEVEL_INFO // CHANGE THIS TO LOGLEVEL_NONE IF YOU WANT FOR THIS LIB TO SHUT UP
 #endif
 
 static const char* loglevels[] =
@@ -71,6 +71,7 @@ typedef struct __parser_settings
     int ignore_first_line;
     int ignore_errors;
     int first_line_as_header;
+    int save_memory; // makes parsing slower but saving a lot of memory
 } PARSER_SETTINGS;
 
 typedef enum __container_data_type

@@ -13,11 +13,11 @@
 /* =============== MACROS ================ */
 #define INCREASE_CAP(cap) do {*cap <<= 1;} while (0)
 #define PARSER_COLUMN_CUSTOM_NAME "__column_%zu__"
-#define PRINTING_BOND 65535
-#define BUFFER_CAPACITY 128
-#define STRING_MAX_WIDTH 128
+#define PRINTING_BOND 30
+#define BUFFER_CAPACITY 256
+#define STRING_MAX_WIDTH 256
 #define MIN_CAPACITY 16
-#define INITIAL_TOKENS_CAPACITY 8
+#define INITIAL_TOKENS_CAPACITY 20
 
 /* =============== TYPES ================ */
 typedef FILE* P_PFILE;
@@ -57,6 +57,8 @@ static int _compare_cells(
 static void _quick_sort(PARSER* parser, size_t sort_column, QuickSortComp comp_func, size_t left, size_t right, size_t* indices);
 static size_t _partition(PARSER* parser, size_t sort_column, QuickSortComp comp_func, size_t left, size_t right, size_t* indices);
 static inline void _swap(size_t* a, size_t* b);
+
+static void _print_formatted_row(PARSER* parser, size_t row_idx, const size_t* col_widths);
 
 static size_t _count_utf8_chars(const char* s);
 static char* _container_value_to_str(CONTAINER_DATA* data);
@@ -305,8 +307,7 @@ int print_all_data(PARSER* parser)
     return print_data(parser, PRINTING_BOND);
 }
 
-// TODO: optimize len / precompute len
-int print_data(PARSER* parser, size_t how_much_to_print)
+int print_data(PARSER* parser, size_t max_rows_to_display)
 {
     if (!parser || parser->container.lines == NULL)
         {
@@ -314,74 +315,77 @@ int print_data(PARSER* parser, size_t how_much_to_print)
             return 1;
         }
 
-    // basic initialization
-    PARSER_CONTAINER* container = &parser->container;
-    size_t line_count = container->line_count;
-    size_t column_count = container->column_count;
+    size_t line_count = parser->container.line_count;
+    size_t column_count = parser->container.column_count;
 
-    if (how_much_to_print > line_count) how_much_to_print = line_count;
-    if (how_much_to_print == 0) return 0;
+    if (line_count == 0) return 0;
 
-    // memory allocation / fallbacks
-    char*** precomputed_str = malloc(how_much_to_print * sizeof(char**));
-    if (!precomputed_str)
+    // determine if we need to use the "head...tail" printing method
+    const int use_ellipsis = line_count > max_rows_to_display;
+    size_t head_count = line_count;
+    size_t tail_count = 0;
+
+    if (use_ellipsis)
         {
-            PARSER_LOG_CRITICAL("MEMORY ALLOCATION FAILED FOR PRECOMPUTED STRINGS");
+            head_count = max_rows_to_display / 2;
+            tail_count = max_rows_to_display - head_count;
+        }
+
+    // calculate maximum width for each column
+    size_t* col_widths = calloc(column_count, sizeof(size_t));
+    if (!col_widths)
+        {
+            PARSER_LOG_CRITICAL("MEMORY ALLOCATION FAILED FOR COLUMN WIDTHS");
             return 1;
         }
-    for (size_t i = 0; i < how_much_to_print; i++)
-        {
-            precomputed_str[i] = malloc(column_count * sizeof(char*));
-            if (!precomputed_str[i])
-                {
-                    PARSER_LOG_CRITICAL("MEMORY ALLOCATION FAILED FOR PRECOMPUTED STRING ROW");
-                    // cleanup previously allocated rows
-                    for(size_t k = 0; k < i; k++)
-                        free(precomputed_str[k]);
-                    free(precomputed_str);
-                    return 1;
-                }
-        }
 
-
-    // calculating maximum width for each column + casting values to str
-    size_t col_widths[column_count];
-    memset(col_widths, 0, sizeof(size_t) * column_count);
-
-    for (size_t j = 0; j < column_count; j++)
-        for (size_t i = 0; i < how_much_to_print; i++)
+    // calculate widths for the head rows
+    for (size_t i = 0; i < head_count; i++)
+        for (size_t j = 0; j < column_count; j++)
             {
-                CONTAINER_DATA* cell = &container->lines[i][j];
-                char* str_val = _container_value_to_str(cell);
+                char* str_val = _container_value_to_str(&parser->container.lines[i][j]);
                 size_t len = _count_utf8_chars(str_val);
-                if (len > col_widths[j]) col_widths[j] = len; // looking for max len
-                precomputed_str[i][j] = str_val;
+                if (len > col_widths[j]) col_widths[j] = len;
+                free(str_val);
             }
 
-    // printing
-    printf("Printing %zu/%zu lines.\n", how_much_to_print, line_count);
-
-    for (size_t i = 0; i < how_much_to_print; i++)
-        {
+    // if using ellipsis, also calculate widths for the tail rows
+    if (use_ellipsis)
+        for (size_t i = line_count - tail_count; i < line_count; i++)
             for (size_t j = 0; j < column_count; j++)
                 {
-                    char* current_str = precomputed_str[i][j];
-                    size_t current_width = _count_utf8_chars(current_str);
-
-                    printf("%s", current_str);
-
-                    size_t padding = col_widths[j] - current_width;
-                    for (size_t k = 0; k < padding; k++)
-                        putchar(' ');
-
-                    if (j < column_count - 1) printf("  ");
-                    free(precomputed_str[i][j]);
+                    char* str_val = _container_value_to_str(&parser->container.lines[i][j]);
+                    size_t len = _count_utf8_chars(str_val);
+                    if (len > col_widths[j]) col_widths[j] = len;
+                    free(str_val);
                 }
-            free(precomputed_str[i]);
-            putchar('\n');
+
+    // print the formatted data
+    printf("Printing %zu/%zu lines.\n\n", use_ellipsis ? max_rows_to_display : line_count, line_count);
+
+    // print head rows
+    for (size_t i = 0; i < head_count; i++)
+        _print_formatted_row(parser, i, col_widths);
+
+    // print ellipsis and tail rows if needed
+    if (use_ellipsis)
+        {
+            // printing "..." for each column to split head and tail
+            for (size_t j = 0; j < column_count; j++)
+                {
+                    printf("...");
+                    for (size_t k = 0; k < col_widths[j] - 3; k++)
+                        putchar(' ');
+                    if (j < column_count - 1)
+                        printf("  ");
+                }
+            putchar('\n'); // starting new line
+
+            for (size_t i = line_count - tail_count; i < line_count; i++)
+                _print_formatted_row(parser, i, col_widths);
         }
 
-    free(precomputed_str);
+    free(col_widths);
     return 0;
 }
 
@@ -459,6 +463,7 @@ static PARSER_SETTINGS _create_default_parser_settings()
     settings.ignore_errors = 1;
     settings.ignore_first_line = 0;
     settings.first_line_as_header = 1;
+    settings.save_memory = 0;
     return settings;
 }
 
@@ -542,12 +547,13 @@ static int _parse_file(PARSER* parser, P_PFILE file_to_parse)
         }
 
     // checking if we can free some memory
-    if (line_count < capacity)
+    if (parser->settings.save_memory && line_count < capacity)
         {
             lines = realloc(lines, line_count * sizeof(CONTAINER_DATA*));
             info = realloc(info, line_count * sizeof(LINE_INFO));
         }
 
+    // setting up our parser attributes
     parser->container.lines = lines;
     parser->container.info = info;
     parser->container.column_count = column_count;
@@ -559,6 +565,14 @@ static int _parse_file(PARSER* parser, P_PFILE file_to_parse)
 
     // fixing all the remaining artefacts
     _check_and_fix_parsed_data(parser);
+
+    // saving mem after all fixes
+    if (parser->settings.save_memory)
+        {
+            size_t cc = parser->container.column_count * sizeof(CONTAINER_DATA);
+            for (size_t i = 0; i < line_count; i++)
+                lines[i] = realloc(lines[i], cc);
+        }
 
     return 0;
 }
@@ -617,8 +631,8 @@ static CONTAINER_DATA* _parse_line(const char* line, char splitter, size_t* toke
     *token_count = count;
 
     // checking if we can free some memory
-    if (count < capacity)
-        tokens = realloc(tokens, count * sizeof(CONTAINER_DATA));
+    //if (count < capacity)
+    //tokens = realloc(tokens, count * sizeof(CONTAINER_DATA));
 
     return tokens;
 }
@@ -748,7 +762,7 @@ static void _check_and_fix_header(P_PARSER parser)
 {
     if (!parser->container.header_included || !parser->container.info[0].is_header)
         {
-            PARSER_LOG_WARNING("[NO NEED TO FIX ANYTHING] OR [CAN\\'T FIX THE HEADER LINE BECAUSE OF THE CONTAINER WRONG STATES]");
+            PARSER_LOG_WARNING("[NO NEED TO FIX ANYTHING] OR [CAN\'T FIX THE HEADER LINE BECAUSE OF THE CONTAINER WRONG STATES]");
             return;
         }
 
@@ -776,12 +790,11 @@ static void _check_and_fix_header(P_PARSER parser)
                         PARSER_LOG_INFO("NEW FIXED HEADER IS %s", current_data->value.string);
                         break;
                     case STRING_TYPE:
-                        // This case is already a string, no action needed.
                         break;
                 }
         }
 
-    // after we add a new header if there is need in that
+    // after we add a new header if there is a need in that
     if (header_column_count < column_count)
         {
             PARSER_LOG_INFO("FIX IS NEEDED, PREPARING TO FILL THE HEADER LINE WITH %zu MORE VALUES", column_count - header_column_count);
@@ -899,7 +912,7 @@ static void _quick_sort(PARSER* parser, size_t sort_column, QuickSortComp comp_f
     if (left < right)
         {
             size_t pr = _partition(parser, sort_column, comp_func, left, right, indices);
-            if (pr > left) // Avoid infinite recursion if pr is 0
+            if (pr > left) // avoid infinite recursion if pr is 0
                 _quick_sort(parser, sort_column, comp_func, left, pr - 1, indices);
             _quick_sort(parser, sort_column, comp_func, pr + 1, right, indices);
         }
@@ -912,10 +925,7 @@ static size_t _partition(PARSER* parser, size_t sort_column, QuickSortComp comp_
     for (j = left; j < right; j++)
         {
             if (comp_func(indices[j], indices[pivot_idx], sort_column, parser) < 0)
-                {
-                    _swap(&indices[i], &indices[j]);
-                    i++;
-                }
+                _swap(&indices[i++], &indices[j]);
         }
     _swap(&indices[i], &indices[pivot_idx]);
     PARSER_LOG_DEBUG("[QUICK SORT] - PARTITION KEY: %zu", i);
@@ -927,6 +937,30 @@ static inline void _swap(size_t* a, size_t* b)
     size_t temp = *a;
     *a = *b;
     *b = temp;
+}
+
+// Printing
+inline static void _print_formatted_row(PARSER* parser, size_t row_idx, const size_t* col_widths)
+{
+    size_t column_count = parser->container.column_count;
+    for (size_t j = 0; j < column_count; j++)
+        {
+            char* current_str = _container_value_to_str(&parser->container.lines[row_idx][j]);
+            size_t current_width = _count_utf8_chars(current_str);
+
+            printf("%s", current_str);
+
+            // add padding for alignment
+            size_t padding = col_widths[j] - current_width;
+            for (size_t k = 0; k < padding; k++)
+                putchar(' ');
+
+            if (j < column_count - 1)
+                printf("  ");
+
+            free(current_str);
+        }
+    putchar('\n');
 }
 
 // Utilities (global)
