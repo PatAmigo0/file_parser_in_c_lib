@@ -3,7 +3,7 @@
 This lightweight library provides a simple, efficient way to parse, manipulate, and save CSV (and other delimited) files in C. It features automatic type detection, sorting capabilities, and flexible data handling.
 
 ## Version
-```0.1 BETA```
+```0.2 BETA```
 
 ## Features
 
